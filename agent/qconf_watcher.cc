@@ -878,8 +878,9 @@ static void process_deleted_event(const string &idc, const string &path)
  */
 static void process_created_event(const string &idc, const string &path)
 {
-    // There is no need operation for created event
-    // For it is user's duty to decide to get the nodes
+       string tblkey;
+       serialize_to_tblkey(QCONF_DATA_TYPE_NODE, idc, path, tblkey);
+       add_watcher_node(tblkey);
 }
 
 /**
