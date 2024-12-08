@@ -878,9 +878,32 @@ static void process_deleted_event(const string &idc, const string &path)
  */
 static void process_created_event(const string &idc, const string &path)
 {
-       string tblkey;
-       serialize_to_tblkey(QCONF_DATA_TYPE_NODE, idc, path, tblkey);
-       add_watcher_node(tblkey);
+    LOG_DEBUG("Processing created event for IDC: %s, Path: %s", idc.c_str(), path.c_str());
+
+    string tblkey;
+    serialize_to_tblkey(QCONF_DATA_TYPE_NODE, idc, path, tblkey);
+    
+    // 立即获取节点的数据并更新表
+    zhandle_t *zh = get_zhandle_by_idc(idc);
+    if (zh != NULL) {
+        string node_value;
+        int ret = zk_get_node(zh, path, node_value, 1); // 假设 zk_get_node 是获取节点数据的方法
+        if (ret == QCONF_OK) {
+            // 将获取到的数据更新到共享内存表
+            string tblval;
+            nodeval_to_tblval(tblkey, node_value, tblval);
+            if (hash_tbl_set(_shm_tbl, tblkey, tblval) != QCONF_OK) {
+                LOG_ERR_KEY_INFO(tblkey, "Failed to set hash table with node value on creation!");
+            } 
+        } else {
+            LOG_ERR_KEY_INFO(tblkey, "Failed to get node value on creation!");
+        }
+    } else {
+        LOG_ERR_KEY_INFO(tblkey, "Zhandle is NULL for IDC: %s", idc.c_str());
+    }
+    
+    // 将节点添加到监视队列以便后续监控
+    add_watcher_node(tblkey);
 }
 
 /**
@@ -926,6 +949,66 @@ static void process_child_event(const string &idc, const string &path)
     {
         add_watcher_node(tblkey);
     }
+    
+// **新增部分开始**
+    // 获取当前节点的所有子节点
+    vector<string> children;
+    zhandle_t* zh = get_zhandle_by_idc(idc);
+    if (zh != NULL)
+    {
+        String_vector children_vector;
+        int ret = zoo_get_children(zh, path.c_str(), 0, &children_vector);
+        if (ret == ZOK)
+        {
+            for (int i = 0; i < children_vector.count; ++i)
+            {
+                string child_path = path + "/" + children_vector.data[i];
+                string child_tblkey;
+                serialize_to_tblkey(QCONF_DATA_TYPE_NODE, idc, child_path, child_tblkey);
+                
+                // 检查子节点是否已在共享内存中
+                if (!hash_tbl_exist(_shm_tbl, child_tblkey))
+                {
+                    // 获取子节点的值
+                    string child_val;
+                    ret = zk_get_node(zh, child_path, child_val, 1);
+                    if (ret == QCONF_OK)
+                    {
+                        // 更新到共享内存
+                        ret = hash_tbl_set(_shm_tbl, child_tblkey, child_val);
+                        if (ret == QCONF_OK)
+                        {
+                            // 添加到监视队列
+                            add_watcher_node(child_tblkey);
+                            LOG_INFO("新增子节点已更新到共享内存并添加监视：%s", child_tblkey.c_str());
+                        }
+                        else
+                        {
+                            LOG_ERR_KEY_INFO(child_tblkey, "Failed to set hash table for new child node!");
+                        }
+                    }
+                    else if (ret == QCONF_NODE_NOT_EXIST)
+                    {
+                        LOG_WARN("子节点不存在，跳过：%s", child_path.c_str());
+                    }
+                    else
+                    {
+                        LOG_ERR_KEY_INFO(child_tblkey, "Failed to get value for new child node!");
+                    }
+                }
+            }
+            deallocate_String_vector(&children_vector);
+        }
+        else
+        {
+            LOG_ERR("Failed to get children for path: %s, error code: %d", path.c_str(), ret);
+        }
+    }
+    else
+    {
+        LOG_ERR("无法获取 IDC: %s 的 zhandle_t", idc.c_str());
+    }
+    // **新增部分结束**
 }
 
 static void add_watcher_node(const string &key)
